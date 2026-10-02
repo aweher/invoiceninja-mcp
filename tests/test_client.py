@@ -7,6 +7,8 @@ import respx
 from invoiceninja_mcp.client import InvoiceNinjaClient, InvoiceNinjaError
 from invoiceninja_mcp.config import Settings
 
+pytestmark = pytest.mark.anyio
+
 API = "https://ninja.example.com/api/v1"
 
 
@@ -66,13 +68,13 @@ async def test_post_passes_query_params(client: InvoiceNinjaClient) -> None:
         (500, {"message": "Server Error"}, "server error"),
     ],
 )
-@respx.mock
 async def test_http_errors_are_mapped(
     client: InvoiceNinjaClient, status: int, body: dict[str, str], fragment: str
 ) -> None:
-    respx.get(f"{API}/invoices/xyz").mock(return_value=httpx.Response(status, json=body))
-    with pytest.raises(InvoiceNinjaError) as exc:
-        await client.get("/invoices/xyz")
+    with respx.mock:
+        respx.get(f"{API}/invoices/xyz").mock(return_value=httpx.Response(status, json=body))
+        with pytest.raises(InvoiceNinjaError) as exc:
+            await client.get("/invoices/xyz")
     assert exc.value.status == status
     assert fragment.lower() in str(exc.value).lower()
     assert "tok-123" not in str(exc.value)

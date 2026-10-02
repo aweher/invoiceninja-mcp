@@ -56,7 +56,15 @@ def test_redact_drops_secrets_recursively() -> None:
 
 
 def test_compact_removes_empty_values_but_keeps_zero_and_false() -> None:
-    data = {"a": None, "b": "", "c": [], "d": {}, "e": 0, "f": False, "g": {"h": None, "i": 1}}
+    data: dict[str, object] = {
+        "a": None,
+        "b": "",
+        "c": [],
+        "d": {},
+        "e": 0,
+        "f": False,
+        "g": {"h": None, "i": 1},
+    }
     assert compact(data) == {"e": 0, "f": False, "g": {"i": 1}}
 
 
