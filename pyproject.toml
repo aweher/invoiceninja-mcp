@@ -1,0 +1,48 @@
+[project]
+name = "invoiceninja-mcp"
+version = "0.1.0"
+description = "MCP server that gives LLMs access to an Invoice Ninja v5 instance through its REST API"
+readme = "README.md"
+authors = [
+    { name = "Ariel Weher", email = "ariel@weher.net" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+    "mcp>=2.2,<3",
+    "pydantic>=2.11",
+]
+
+[project.scripts]
+invoiceninja-mcp = "invoiceninja_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "pytest-asyncio>=1.0",
+    "respx>=0.22",
+    "ruff>=0.11",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = ["live: hits a real Invoice Ninja instance (needs INVOICENINJA_URL and INVOICENINJA_API_TOKEN)"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
