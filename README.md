@@ -3,7 +3,7 @@
 Servidor [MCP](https://modelcontextprotocol.io) para que un LLM (Claude Desktop, Claude Code o cualquier cliente MCP) consulte —y, si lo habilitás explícitamente, modifique— los datos de una instancia de **Invoice Ninja v5** a través de su [API REST](https://api-docs.invoicing.co/).
 
 - **Solo lectura por defecto.** Las herramientas de escritura no se registran salvo que `INVOICENINJA_ENABLE_WRITES=true`.
-- Los secretos que devuelve la API (semillas 2FA, tokens OAuth, tokens de gateways, contraseñas) se eliminan de todas las respuestas. El token de la API nunca aparece en la salida.
+- Los secretos que devuelve la API (semillas 2FA, tokens OAuth, tokens de gateways, contraseñas) y los links "al portador" (login sin contraseña al portal de clientes, links de ver/pagar facturas, claves de contacto) se eliminan de todas las respuestas. El token de la API nunca aparece en la salida.
 - Respuestas en Markdown legible (nombres de cliente y estados resueltos, fechas legibles) o JSON compacto con proyección de campos.
 
 ## Requisitos
