@@ -256,7 +256,7 @@ CORE_ENTITIES: dict[str, EntitySpec] = {
                 f"client_id (required), frequency_id (5 = monthly), remaining_cycles "
                 f"(-1 = endless), next_send_date, {_LINE_ITEMS_HINT}"
             ),
-            bulk_actions=("archive", "restore", "delete", "start", "stop"),
+            bulk_actions=("archive", "restore", "delete", "start", "stop", "send_now"),
         ),
         EntitySpec(
             path="products",
@@ -323,7 +323,6 @@ CORE_ENTITIES: dict[str, EntitySpec] = {
             name_includes=("client", "vendor"),
             has_client_filter=True,
             write_hint="amount, frequency_id, next_send_date, vendor_id, category_id, public_notes",
-            bulk_actions=("archive", "restore", "delete", "start", "stop"),
         ),
         EntitySpec(
             path="vendors",
@@ -402,7 +401,7 @@ CORE_ENTITIES: dict[str, EntitySpec] = {
             extra_filters=f"{_DATED_FILTERS}, vendor_id",
             name_includes=("vendor",),
             write_hint=f"vendor_id (required), {_LINE_ITEMS_HINT}",
-            bulk_actions=(*_DOC_ACTIONS, "mark_sent"),
+            bulk_actions=(*_DOC_ACTIONS, "cancel"),
         ),
     )
 }
