@@ -100,6 +100,10 @@ class InvoiceNinjaClient:
             transport=transport,
         )
 
+    @property
+    def base_url(self) -> str:
+        return self._settings.base_url
+
     async def __aenter__(self) -> InvoiceNinjaClient:
         return self
 

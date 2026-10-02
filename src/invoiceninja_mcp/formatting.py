@@ -153,7 +153,12 @@ def _cell(
     return text
 
 
-def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
+def md_cell(value: Any) -> str:
+    """Single-line, pipe-escaped text for a Markdown table cell."""
+    return " ".join(str(value).split()).replace("|", "\\|")
+
+
+def markdown_table(headers: list[str], rows: list[list[str]]) -> list[str]:
     lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
     lines += ["| " + " | ".join(row) + " |" for row in rows]
     return lines
@@ -179,7 +184,7 @@ def render_list_markdown(
         [str(r.get("id", "")), *[_cell(spec, c, r, today, table=True) for c in spec.columns]]
         for r in records
     ]
-    lines += _table(headers, rows)
+    lines += markdown_table(headers, rows)
     if page < pages:
         lines += ["", f"More results available: call again with page={page + 1}."]
     return "\n".join(lines)
@@ -244,9 +249,9 @@ def render_record_markdown(
             for field, kind in cols:
                 value = item.get(field, "")
                 text = _money(value) if kind == "money" and value != "" else str(value)
-                row.append(" ".join(text.split()).replace("|", "\\|"))
+                row.append(md_cell(text))
             rows.append(row)
-        lines += ["", f"## {key.replace('_', ' ').capitalize()}", *_table(headers, rows)]
+        lines += ["", f"## {key.replace('_', ' ').capitalize()}", *markdown_table(headers, rows)]
 
     if nested:
         lines += [

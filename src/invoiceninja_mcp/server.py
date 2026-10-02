@@ -8,7 +8,7 @@ from mcp.server import MCPServer
 from invoiceninja_mcp import __version__
 from invoiceninja_mcp.client import InvoiceNinjaClient
 from invoiceninja_mcp.config import Settings
-from invoiceninja_mcp.tools import read
+from invoiceninja_mcp.tools import misc, read
 
 INSTRUCTIONS = """\
 Tools for reading (and, if enabled, changing) data in an Invoice Ninja v5 instance.
@@ -45,5 +45,6 @@ def build_server(
         instructions=INSTRUCTIONS,
         lifespan=lifespan,
     )
+    misc.register(server, http, report_poll_interval)
     read.register(server, http)
     return server
