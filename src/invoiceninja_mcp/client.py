@@ -117,6 +117,10 @@ class InvoiceNinjaClient:
     ) -> None:
         await self.aclose()
 
+    def _scrub(self, text: str) -> str:
+        """Defense in depth: never echo the API token, even if the server reflects it."""
+        return text.replace(self._settings.api_token, "***")
+
     async def aclose(self) -> None:
         await self._http.aclose()
 
@@ -144,7 +148,8 @@ class InvoiceNinjaClient:
                 f"{type(exc).__name__}. Check INVOICENINJA_URL and network access."
             ) from None
         if response.status_code >= 400:
-            raise _error_for(response)
+            error = _error_for(response)
+            raise InvoiceNinjaError(self._scrub(str(error)), error.status)
         try:
             return response.json()
         except ValueError:

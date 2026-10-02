@@ -4,9 +4,13 @@ import base64
 import binascii
 import csv
 import io
+import re
 import time
+from collections import OrderedDict
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 import anyio
 from mcp.server import MCPServer
@@ -14,11 +18,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from invoiceninja_mcp.client import InvoiceNinjaClient, InvoiceNinjaError
-from invoiceninja_mcp.formatting import compact, markdown_table, md_cell
+from invoiceninja_mcp.formatting import compact, markdown_table, md_cell, redact
 from invoiceninja_mcp.tools.common import (
     READ_ONLY,
+    REPORT_ID_PATTERN,
     ResponseFormat,
     annotations,
+    data_of,
+    expect_dict,
     to_json,
     tool_errors,
 )
@@ -87,6 +94,21 @@ MaxWait = Annotated[
     Field(ge=0, le=300, description="Seconds to wait for the report before returning its id"),
 ]
 MaxRows = Annotated[int, Field(ge=1, le=1000, description="Maximum rows to return")]
+ReportId = Annotated[
+    str, Field(pattern=REPORT_ID_PATTERN, description="report_id returned by run_report")
+]
+
+# Some report types never finish on some instances; stop telling the model to wait.
+REPORT_GIVE_UP_SECONDS = 600
+_MAX_TRACKED_REPORTS = 50
+
+
+@dataclass
+class _ReportState:
+    started: float
+    payload: Any = None
+    ready: bool = False
+
 
 _SEARCH_GROUPS = {
     "clients": "Clients",
@@ -130,13 +152,20 @@ def _parse_report(payload: Any) -> tuple[list[str], list[str], list[dict[str, An
         table = [row for row in csv.reader(io.StringIO(text)) if row]
         if not table:
             return [], [], []
-        headers = table[0]
-        rows = [dict(zip(headers, row, strict=False)) for row in table[1:]]
+        width = max(len(row) for row in table)
+        if len(table[0]) == width and len(set(table[0])) == width:
+            headers = table[0]
+            body = table[1:]
+        else:  # title row or several sections (e.g. profit & loss): keep every row and cell
+            headers = [f"col_{n + 1}" for n in range(width)]
+            body = table
+        rows = [dict(zip(headers, row, strict=False)) for row in body]
         return [], headers, rows
     return None
 
 
 def _render_report(report_id: str, payload: Any, max_rows: int, response_format: str) -> str:
+    payload = redact(payload)
     parsed = _parse_report(payload)
     if parsed is None:
         return to_json(compact(payload))
@@ -175,14 +204,39 @@ def _render_report(report_id: str, payload: Any, max_rows: int, response_format:
 
 
 def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float) -> None:
+    reports: OrderedDict[str, _ReportState] = OrderedDict()
+
+    def track(report_id: str) -> None:
+        reports[report_id] = _ReportState(started=time.monotonic())
+        while len(reports) > _MAX_TRACKED_REPORTS:
+            reports.popitem(last=False)
+
     async def fetch_report(report_id: str, max_wait: int) -> Any | None:
+        """Poll until ready. Results are cached because Invoice Ninja hands them out once."""
+        state = reports.get(report_id)
+        if state is None:
+            raise ToolError(
+                f"Unknown report_id '{report_id}'. Only reports started with "
+                "invoiceninja_run_report in this session can be read; start the report again."
+            )
+        if state.ready:
+            return state.payload
         deadline = time.monotonic() + max_wait
+        path = f"/reports/preview/{quote(report_id, safe='')}"
         while True:
             try:
-                return await client.post(f"/reports/preview/{report_id}", json={})
+                state.payload = await client.post(path, json={})
+                state.ready = True
+                return state.payload
             except InvoiceNinjaError as exc:
                 if exc.status != 409:
                     raise
+            if time.monotonic() - state.started > REPORT_GIVE_UP_SECONDS:
+                raise ToolError(
+                    f"Report {report_id} is still not ready after "
+                    f"{REPORT_GIVE_UP_SECONDS // 60} minutes; it probably failed on the server. "
+                    "Try a smaller date range, a different report type, or list tools instead."
+                )
             if time.monotonic() >= deadline:
                 return None
             await anyio.sleep(poll_interval)
@@ -190,13 +244,12 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
     def pending_message(report_id: str) -> str:
         return (
             f"The report is still being generated (report_id: {report_id}). Call "
-            f"invoiceninja_get_report_result with report_id='{report_id}' in a little while. "
-            "Results stay available for one hour and can be read once."
+            f"invoiceninja_get_report_result with report_id='{report_id}' in a little while."
         )
 
     @tool_errors
     async def ping() -> str:
-        info = await client.get("/ping")
+        info = expect_dict(await client.get("/ping"), "ping")
         return (
             f"Connected to Invoice Ninja at {client.base_url}: company "
             f"'{info.get('company_name', '?')}', API user '{info.get('user_name', '?')}'."
@@ -210,12 +263,14 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
         ] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="Maximum entries")] = 100,
     ) -> str:
-        statics = await client.get("/statics")
+        statics = expect_dict(await client.get("/statics"), "statics")
         entries = statics.get(section) or []
+        if not isinstance(entries, list):
+            entries = []
         if search:
             needle = search.lower()
             entries = [e for e in entries if needle in to_json(e).lower()]
-        return to_json({section: compact(entries[:limit]), "total": len(entries)})
+        return to_json({section: compact(redact(entries[:limit])), "total": len(entries)})
 
     @tool_errors
     async def search(
@@ -231,7 +286,7 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
         limit: Annotated[int, Field(ge=1, le=100, description="Max matches per group")] = 20,
         response_format: ResponseFormat = "markdown",
     ) -> str:
-        payload = await client.post("/search", json={"search": query})
+        payload = expect_dict(await client.post("/search", json={"search": query}), "search")
         words = query.lower().split()
         groups: dict[str, list[dict[str, Any]]] = {}
         totals: dict[str, int] = {}
@@ -248,10 +303,16 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
             if items:
                 groups[key] = items[:limit]
                 totals[key] = len(items)
+        if not groups:
+            # the built-in search only covers recent records on some instances
+            groups, totals = await search_lists(query, limit)
         if response_format == "json":
             return to_json({"results": groups, "totals": totals})
         if not groups:
-            return f"No matches for '{query}'. Try fewer or different words, or a list tool."
+            return (
+                f"No matches for '{query}' in clients or invoices. Try fewer or different words, "
+                "or a list tool with its 'filter' parameter for other record types."
+            )
         lines = [f"# Search results for '{query}'"]
         for key, items in groups.items():
             header = f"## {_SEARCH_GROUPS[key]} ({totals[key]})"
@@ -261,17 +322,65 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
         lines += ["", "Contact matches point to their client's id."]
         return "\n".join(lines)
 
+    async def search_lists(
+        query: str, limit: int
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        totals: dict[str, int] = {}
+        clients = data_of(
+            expect_dict(
+                await client.get("/clients", params={"filter": query, "per_page": limit}),
+                "clients",
+            )
+        )
+        invoices = data_of(
+            expect_dict(
+                await client.get(
+                    "/invoices", params={"filter": query, "per_page": limit, "include": "client"}
+                ),
+                "invoices",
+            )
+        )
+        found = [
+            {"name": c.get("display_name") or c.get("name"), "id": c.get("id"), "type": "client"}
+            for c in clients or []
+            if isinstance(c, Mapping)
+        ]
+        if found:
+            groups["clients"], totals["clients"] = found, len(found)
+        found = []
+        for i in invoices or []:
+            if not isinstance(i, Mapping):
+                continue
+            owner = i.get("client")
+            if not isinstance(owner, Mapping):
+                owner = {}
+            name = owner.get("display_name") or owner.get("name") or "?"
+            found.append(
+                {"name": f"{name} - {i.get('number')}", "id": i.get("id"), "type": "invoice"}
+            )
+        if found:
+            groups["invoices"], totals["invoices"] = found, len(found)
+        return groups, totals
+
     @tool_errors
     async def dashboard_totals(
         start_date: IsoDate = None,
         end_date: IsoDate = None,
         response_format: ResponseFormat = "markdown",
     ) -> str:
+        if bool(start_date) != bool(end_date):
+            raise ToolError("Pass both start_date and end_date, or neither.")
         body = {k: v for k, v in {"start_date": start_date, "end_date": end_date}.items() if v}
-        payload = await client.post("/charts/totals", json=body)
+        payload = redact(expect_dict(await client.post("/charts/totals", json=body), "totals"))
         if response_format == "json":
             return to_json(payload)
         currencies = payload.get("currencies") or {}
+        if not isinstance(currencies, Mapping):
+            currencies = {}
+        rows = [(str(cid), str(code)) for cid, code in currencies.items()]
+        if isinstance(payload.get("999"), Mapping):
+            rows.append(("999", "All (company currency)"))
         lines = [
             "# Dashboard totals "
             f"({payload.get('start_date', start_date or '?')} → "
@@ -280,8 +389,8 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
             "| Currency | Invoiced | Paid | Outstanding (count) | Expenses |",
             "|---|---|---|---|---|",
         ]
-        for currency_id, code in currencies.items():
-            block = payload.get(str(currency_id)) or {}
+        for currency_id, code in rows:
+            block = payload.get(currency_id) or {}
 
             def amount(section: str, field: str, block: Mapping[str, Any] = block) -> str:
                 value = (block.get(section) or {}).get(field)
@@ -293,7 +402,7 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
                 f"{amount('revenue', 'paid_to_date')} | "
                 f"{amount('outstanding', 'amount')} ({count}) | {amount('expenses', 'amount')} |"
             )
-        if not currencies:
+        if not rows:
             lines.append("| — | 0.00 | 0.00 | 0.00 (0) | 0.00 |")
         return "\n".join(lines)
 
@@ -331,7 +440,7 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
             dict[str, Any] | None,
             Field(description="Additional report parameters, e.g. {'product_key': 'X'}"),
         ] = None,
-        max_wait_seconds: MaxWait = 60,
+        max_wait_seconds: MaxWait = 20,
         max_rows: MaxRows = 100,
         response_format: ResponseFormat = "markdown",
     ) -> str:
@@ -355,10 +464,14 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
             body["client_id"] = client_id
         if report == "profitloss":
             body.update({"is_income_billed": is_income_billed, "include_tax": include_tax})
-        started = await client.post(f"/reports/{report}", json=body)
-        report_id = str(started.get("message", "")) if isinstance(started, Mapping) else ""
-        if not report_id or " " in report_id:
-            raise ToolError(f"Invoice Ninja did not start the report: {started!r}")
+        started = expect_dict(await client.post(f"/reports/{report}", json=body), "report")
+        report_id = str(started.get("message", ""))
+        if not re.fullmatch(REPORT_ID_PATTERN, report_id):
+            raise ToolError(
+                "Invoice Ninja did not start the report (unexpected response); "
+                "check the parameters or try another report type."
+            )
+        track(report_id)
         payload = await fetch_report(report_id, max_wait_seconds)
         if payload is None:
             return pending_message(report_id)
@@ -366,10 +479,8 @@ def register(server: MCPServer, client: InvoiceNinjaClient, poll_interval: float
 
     @tool_errors
     async def get_report_result(
-        report_id: Annotated[
-            str, Field(min_length=1, max_length=100, description="Id from run_report")
-        ],
-        max_wait_seconds: MaxWait = 30,
+        report_id: ReportId,
+        max_wait_seconds: MaxWait = 20,
         max_rows: MaxRows = 100,
         response_format: ResponseFormat = "markdown",
     ) -> str:

@@ -33,8 +33,14 @@ Fields = Annotated[
 ]
 RecordId = Annotated[
     str,
-    Field(min_length=1, max_length=64, description="Hashed record id, e.g. 'Opnel5aKBz'"),
+    Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Hashed record id, e.g. 'Opnel5aKBz'",
+    ),
 ]
+REPORT_ID_PATTERN = r"^[A-Za-z0-9-]{1,100}$"
 
 READ_ONLY = {"read_only_hint": True, "destructive_hint": False, "idempotent_hint": True}
 
@@ -62,6 +68,15 @@ def to_json(value: Any) -> str:
 
 def record_path(path: str, record_id: str) -> str:
     return f"/{path}/{quote(record_id, safe='')}"
+
+
+def expect_dict(payload: Any, what: str) -> Mapping[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise InvoiceNinjaError(
+            f"Unexpected response from Invoice Ninja for {what}: expected a JSON object, "
+            f"got {type(payload).__name__}. Check that INVOICENINJA_URL points at Invoice Ninja."
+        )
+    return payload
 
 
 def data_of(payload: Any) -> Any:

@@ -138,14 +138,6 @@ async def test_get_invoice(mcp_client: Client, api: respx.MockRouter) -> None:
     assert text_of(result).startswith("# Invoice INV-0001 (Wpmbk5ezJn)")
 
 
-async def test_get_escapes_id_in_path(mcp_client: Client, api: respx.MockRouter) -> None:
-    route = api.get("/clients/a%2Fb").mock(
-        return_value=httpx.Response(200, json={"data": {"id": "a/b"}})
-    )
-    await mcp_client.call_tool("invoiceninja_get_client", {"id": "a/b"})
-    assert route.called
-
-
 async def test_get_not_found_is_actionable_error(mcp_client: Client, api: respx.MockRouter) -> None:
     api.get("/invoices/nope").mock(return_value=httpx.Response(404, json={"message": "nf"}))
     result = await mcp_client.call_tool("invoiceninja_get_invoice", {"id": "nope"})
@@ -199,12 +191,13 @@ async def test_json_list_omits_bulky_fields_by_default(
 async def test_json_list_fields_can_request_bulky_fields(
     mcp_client: Client, api: respx.MockRouter
 ) -> None:
-    record = {**INVOICE, "invitations": [{"key": "k"}]}
+    record = {**INVOICE, "invitations": [{"id": "inv1", "sent_date": "2026-09-01"}]}
     api.get("/invoices").mock(return_value=httpx.Response(200, json={"data": [record]}))
     result = await mcp_client.call_tool(
         "invoiceninja_list_invoices", {"response_format": "json", "fields": ["invitations"]}
     )
-    assert json.loads(text_of(result))["data"][0]["invitations"] == [{"key": "k"}]
+    invitations = json.loads(text_of(result))["data"][0]["invitations"]
+    assert invitations == [{"id": "inv1", "sent_date": "2026-09-01"}]
 
 
 async def test_oversized_json_list_drops_records_and_stays_valid(

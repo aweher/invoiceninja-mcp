@@ -18,6 +18,13 @@ _SENSITIVE_KEYS = {
     "oauth_user_token",
     "oauth_user_refresh_token",
     "oauth_provider_id",
+    # bearer links: client-portal logins and invoice/quote view-and-pay links
+    "contact_key",
+    "client_hash",
+    "key",
+    "link",
+    # subscription webhooks may carry Authorization headers
+    "post_purchase_headers",
 }
 _TRUNCATE_CELL = 60
 _EPOCH_KEYS = {"last_login"}

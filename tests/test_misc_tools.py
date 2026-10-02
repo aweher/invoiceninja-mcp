@@ -75,6 +75,8 @@ async def test_search_matches_all_words(mcp_client: Client, api: respx.MockRoute
 
 async def test_search_no_results(mcp_client: Client, api: respx.MockRouter) -> None:
     api.post("/search").mock(return_value=httpx.Response(200, json=SEARCH_PAYLOAD))
+    api.get("/clients").mock(return_value=httpx.Response(200, json={"data": []}))
+    api.get("/invoices").mock(return_value=httpx.Response(200, json={"data": []}))
     result = await mcp_client.call_tool("invoiceninja_search", {"query": "zzz"})
     assert "No matches" in text_of(result)
 
@@ -180,7 +182,14 @@ async def test_run_report_returns_report_id_when_not_ready(
 
 
 async def test_get_report_result(mcp_client: Client, api: respx.MockRouter) -> None:
-    api.post("/reports/preview/h3").mock(return_value=httpx.Response(200, json=REPORT_JSON))
+    api.post("/reports/clients").mock(return_value=httpx.Response(200, json={"message": "h3"}))
+    api.post("/reports/preview/h3").mock(
+        side_effect=[httpx.Response(409, json={}), httpx.Response(200, json=REPORT_JSON)]
+    )
+    await mcp_client.call_tool(
+        "invoiceninja_run_report",
+        {"report": "clients", "date_range": "all", "max_wait_seconds": 0},
+    )
     result = await mcp_client.call_tool("invoiceninja_get_report_result", {"report_id": "h3"})
     assert "| Globex | 5.00 |" in text_of(result)
 

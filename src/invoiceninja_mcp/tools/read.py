@@ -1,5 +1,6 @@
 """List/get tools generated from the entity registry."""
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Any, Literal
 
@@ -28,6 +29,7 @@ from invoiceninja_mcp.tools.common import (
     ResponseFormat,
     annotations,
     data_of,
+    expect_dict,
     record_path,
     to_json,
     tool_errors,
@@ -59,10 +61,6 @@ JSON_BUDGET = CHARACTER_LIMIT - 500
 Filter = Annotated[
     str | None,
     Field(description="Free-text search across the main columns (number, name, contacts, notes…)"),
-]
-ClientStatus = Annotated[
-    str | None,
-    Field(description="Business status filter, comma separated (allowed values listed above)"),
 ]
 ClientId = Annotated[str | None, Field(description="Only records of this client (hashed id)")]
 Status = Annotated[
@@ -116,23 +114,25 @@ async def list_entity(
     response_format: str = "markdown",
 ) -> str:
     params: dict[str, Any] = dict(extra_filters or {})
-    params.update(
-        {
-            "filter": filter,
-            "client_status": client_status,
-            "client_id": client_id,
-            "status": status,
-            "sort": sort,
-            "page": page,
-            "per_page": per_page,
-            "include": _include_param(spec, include),
-        }
-    )
-    payload = await client.get(f"/{spec.path}", params=params)
+    explicit = {
+        "filter": filter,
+        "client_status": client_status,
+        "client_id": client_id,
+        "status": status,
+        "sort": sort,
+        "page": page,
+        "per_page": per_page,
+    }
+    params.update({k: v for k, v in explicit.items() if v is not None})
+    params["include"] = _include_param(spec, include or params.get("include"))
+    payload = expect_dict(await client.get(f"/{spec.path}", params=params), spec.label)
     keep = _user_includes(include)
-    records = [normalize_record(spec, r, keep) for r in data_of(payload) or []]
-    meta = payload.get("meta") if isinstance(payload, Mapping) else None
-    pagination = (meta or {}).get("pagination") or {}
+    rows = data_of(payload) or []
+    if not isinstance(rows, list):
+        rows = []
+    records = [normalize_record(spec, r, keep) for r in rows if isinstance(r, Mapping)]
+    meta = payload.get("meta")
+    pagination = (meta if isinstance(meta, Mapping) else {}).get("pagination") or {}
     if response_format == "json":
         return _list_json(records, pagination, fields)
     return render_list_markdown(spec, records, pagination)
@@ -186,7 +186,10 @@ async def get_entity(
     payload = await client.get(
         record_path(spec.path, record_id), params={"include": _include_param(spec, include)}
     )
-    record = normalize_record(spec, data_of(payload) or {}, _user_includes(include))
+    data = data_of(expect_dict(payload, spec.singular))
+    record = normalize_record(
+        spec, expect_dict(data, spec.singular.replace("_", " ")), _user_includes(include)
+    )
     if response_format == "json":
         return to_json(compact({"data": project(record, fields) if fields else record}))
     return render_record_markdown(spec, record)
@@ -209,38 +212,45 @@ def _list_description(spec: EntitySpec) -> str:
     return "\n".join(lines)
 
 
-def _make_list_tool(client: InvoiceNinjaClient, spec: EntitySpec) -> Callable[..., Awaitable[str]]:
-    @tool_errors
-    async def list_tool(
-        filter: Filter = None,
-        client_status: ClientStatus = None,
-        client_id: ClientId = None,
-        status: Status = None,
-        sort: Sort = None,
-        page: Page = 1,
-        per_page: PerPage = 20,
-        include: Include = None,
-        extra_filters: ExtraFilters = None,
-        fields: Fields = None,
-        response_format: ResponseFormat = "markdown",
-    ) -> str:
-        return await list_entity(
-            client,
-            spec,
-            filter=filter,
-            client_status=client_status,
-            client_id=client_id,
-            status=status,
-            sort=sort,
-            page=page,
-            per_page=per_page,
-            include=include,
-            extra_filters=extra_filters,
-            fields=fields,
-            response_format=response_format,
+def _list_parameters(spec: EntitySpec) -> list[inspect.Parameter]:
+    def param(name: str, annotation: Any, default: Any) -> inspect.Parameter:
+        return inspect.Parameter(
+            name, inspect.Parameter.KEYWORD_ONLY, default=default, annotation=annotation
         )
 
-    return list_tool
+    params = [param("filter", Filter, None)]
+    if spec.client_status_values:
+        values = ", ".join(spec.client_status_values)
+        client_status = Annotated[
+            str | None,
+            Field(description=f"Business status filter, comma separated; one or more of: {values}"),
+        ]
+        params.append(param("client_status", client_status, None))
+    if spec.has_client_filter:
+        params.append(param("client_id", ClientId, None))
+    params += [
+        param("status", Status, None),
+        param("sort", Sort, None),
+        param("page", Page, 1),
+        param("per_page", PerPage, 20),
+        param("include", Include, None),
+        param("extra_filters", ExtraFilters, None),
+        param("fields", Fields, None),
+        param("response_format", ResponseFormat, "markdown"),
+    ]
+    return params
+
+
+def _make_list_tool(client: InvoiceNinjaClient, spec: EntitySpec) -> Callable[..., Awaitable[str]]:
+    """Build a list tool whose schema only exposes the filters this entity supports."""
+
+    async def list_tool(**kwargs: Any) -> str:
+        return await list_entity(client, spec, **kwargs)
+
+    tool = tool_errors(list_tool)
+    # the MCP SDK derives the input schema from inspect.signature(), which honours this
+    setattr(tool, "__signature__", inspect.Signature(_list_parameters(spec), return_annotation=str))  # noqa: B010
+    return tool
 
 
 def _make_get_tool(client: InvoiceNinjaClient, spec: EntitySpec) -> Callable[..., Awaitable[str]]:
