@@ -61,7 +61,7 @@ El asistente encuentra los registros, sigue la paginación, resuelve IDs a nombr
 ### 2. Instalación
 
 ```bash
-git clone https://github.com/<tu-usuario>/invoiceninja-mcp.git
+git clone https://github.com/aweher/invoiceninja-mcp.git
 cd invoiceninja-mcp
 uv sync
 ```
