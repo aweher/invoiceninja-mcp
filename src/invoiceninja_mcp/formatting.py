@@ -20,6 +20,7 @@ _SENSITIVE_KEYS = {
     "oauth_provider_id",
 }
 _TRUNCATE_CELL = 60
+_EPOCH_KEYS = {"last_login"}
 
 
 def _is_sensitive(key: str) -> bool:
@@ -80,7 +81,7 @@ def normalize_record(
             if rel not in keep:
                 del rec[rel]
     for key, value in list(rec.items()):
-        if key.endswith("_at"):
+        if key.endswith("_at") or key in _EPOCH_KEYS:
             rec[key] = _epoch_to_iso(value)
     if spec.status_map and rec.get("status_id") is not None:
         rec["status"] = spec.status_map.get(str(rec["status_id"]), str(rec["status_id"]))

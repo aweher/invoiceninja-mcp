@@ -113,3 +113,20 @@ async def test_timeout_is_mapped(client: InvoiceNinjaClient) -> None:
     respx.get(f"{API}/ping").mock(side_effect=httpx.ReadTimeout("slow"))
     with pytest.raises(InvoiceNinjaError, match="timed out"):
         await client.get("/ping")
+
+
+@respx.mock
+async def test_missing_model_400_is_reported_as_not_found(client: InvoiceNinjaClient) -> None:
+    body = {"message": "No query results for model [App\\Models\\Invoice]."}
+    respx.get(f"{API}/invoices/nope").mock(return_value=httpx.Response(400, json=body))
+    with pytest.raises(InvoiceNinjaError) as exc:
+        await client.get("/invoices/nope")
+    assert "not found" in str(exc.value).lower()
+    assert "list or search" in str(exc.value)
+
+
+@respx.mock
+async def test_other_400_is_bad_request(client: InvoiceNinjaClient) -> None:
+    respx.get(f"{API}/invoices").mock(return_value=httpx.Response(400, json={"message": "Bad"}))
+    with pytest.raises(InvoiceNinjaError, match=r"Bad request \(400\)"):
+        await client.get("/invoices")

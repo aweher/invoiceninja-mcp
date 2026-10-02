@@ -161,3 +161,9 @@ def test_truncate_long_text_appends_guidance() -> None:
     assert out.startswith("x" * 10)
     assert "truncated" in out
     assert "per_page" in out
+
+
+def test_last_login_epoch_is_converted() -> None:
+    spec = SECONDARY_ENTITIES["users"]
+    rec = normalize_record(spec, {"id": "u", "last_login": 1790944022})
+    assert rec["last_login"] == "2026-10-02T12:27:02Z"

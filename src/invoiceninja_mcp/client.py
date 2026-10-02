@@ -56,9 +56,11 @@ def _error_for(response: httpx.Response) -> InvoiceNinjaError:
         )
     elif status == 403:
         text = f"Forbidden (403): the API token's user lacks permission for this action.{detail}"
-    elif status == 404:
+    elif status == 400 and "no query results" not in message.lower():
+        text = f"Bad request (400).{detail}"
+    elif status in (400, 404):
         text = (
-            "Resource not found (404). Check the id (Invoice Ninja uses hashed ids like "
+            f"Resource not found ({status}). Check the id (Invoice Ninja uses hashed ids like "
             f"'Opnel5aKBz'); use a list or search tool to find valid ids.{detail}"
         )
     elif status == 409:
