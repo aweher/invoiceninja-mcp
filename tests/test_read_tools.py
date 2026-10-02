@@ -176,3 +176,46 @@ async def test_users_never_leak_secrets(mcp_client: Client, api: respx.MockRoute
         )
         assert "SEED" not in text_of(result)
         assert "oauth_user_token" not in text_of(result)
+
+
+async def test_empty_json_list_keeps_data_key(mcp_client: Client, api: respx.MockRouter) -> None:
+    api.get("/credits").mock(return_value=httpx.Response(200, json={"data": []}))
+    result = await mcp_client.call_tool("invoiceninja_list_credits", {"response_format": "json"})
+    assert json.loads(text_of(result))["data"] == []
+
+
+async def test_json_list_omits_bulky_fields_by_default(
+    mcp_client: Client, api: respx.MockRouter
+) -> None:
+    record = {**INVOICE, "invitations": [{"key": "k"}], "backup": {"x": 1}, "settings": {"a": 1}}
+    api.get("/invoices").mock(return_value=httpx.Response(200, json={"data": [record]}))
+    result = await mcp_client.call_tool("invoiceninja_list_invoices", {"response_format": "json"})
+    payload = json.loads(text_of(result))
+    assert "invitations" not in payload["data"][0]
+    assert "backup" not in payload["data"][0]
+    assert "invitations" in payload["omitted_fields"]
+
+
+async def test_json_list_fields_can_request_bulky_fields(
+    mcp_client: Client, api: respx.MockRouter
+) -> None:
+    record = {**INVOICE, "invitations": [{"key": "k"}]}
+    api.get("/invoices").mock(return_value=httpx.Response(200, json={"data": [record]}))
+    result = await mcp_client.call_tool(
+        "invoiceninja_list_invoices", {"response_format": "json", "fields": ["invitations"]}
+    )
+    assert json.loads(text_of(result))["data"][0]["invitations"] == [{"key": "k"}]
+
+
+async def test_oversized_json_list_drops_records_and_stays_valid(
+    mcp_client: Client, api: respx.MockRouter
+) -> None:
+    records = [{**INVOICE, "id": f"i{n}", "public_notes": "x" * 4000} for n in range(20)]
+    api.get("/invoices").mock(return_value=httpx.Response(200, json={"data": records}))
+    result = await mcp_client.call_tool("invoiceninja_list_invoices", {"response_format": "json"})
+    text = text_of(result)
+    payload = json.loads(text)
+    assert len(text) <= 25_000
+    assert 0 < len(payload["data"]) < 20
+    assert payload["truncated"]["returned"] == len(payload["data"])
+    assert payload["truncated"]["fetched"] == 20

@@ -14,6 +14,7 @@ from invoiceninja_mcp.entities import (
     EntitySpec,
 )
 from invoiceninja_mcp.formatting import (
+    CHARACTER_LIMIT,
     compact,
     normalize_record,
     project,
@@ -48,6 +49,12 @@ SecondaryEntity = Literal[
     "recurring_quotes",
     "users",
 ]
+
+# Large nested/text fields left out of JSON listings unless asked for via `fields`.
+LIST_JSON_BULKY = frozenset(
+    {"invitations", "documents", "backup", "settings", "e_invoice", "tax_info", "footer"}
+)
+JSON_BUDGET = CHARACTER_LIMIT - 500
 
 Filter = Annotated[
     str | None,
@@ -124,12 +131,47 @@ async def list_entity(
     payload = await client.get(f"/{spec.path}", params=params)
     keep = _user_includes(include)
     records = [normalize_record(spec, r, keep) for r in data_of(payload) or []]
-    pagination = (payload.get("meta") or {}).get("pagination") or {}
+    meta = payload.get("meta") if isinstance(payload, Mapping) else None
+    pagination = (meta or {}).get("pagination") or {}
     if response_format == "json":
-        data = [project(r, fields) if fields else r for r in records]
-        pagination = {k: v for k, v in pagination.items() if k != "links"}
-        return to_json(compact({"data": data, "pagination": pagination}))
+        return _list_json(records, pagination, fields)
     return render_list_markdown(spec, records, pagination)
+
+
+def _list_json(
+    records: list[dict[str, Any]], pagination: Mapping[str, Any], fields: list[str] | None
+) -> str:
+    """JSON listing that always parses: bulky fields are opt-in and records (never characters)
+    are dropped to stay within the response budget."""
+    omitted: set[str] = set()
+    data: list[Any] = []
+    for record in records:
+        if fields:
+            data.append(compact(project(record, fields)))
+            continue
+        omitted |= LIST_JSON_BULKY & record.keys()
+        data.append(compact({k: v for k, v in record.items() if k not in LIST_JSON_BULKY}))
+    result: dict[str, Any] = {
+        "data": data,
+        "pagination": {k: v for k, v in pagination.items() if k != "links"},
+    }
+    if omitted:
+        result["omitted_fields"] = sorted(omitted)
+        result["note"] = (
+            "Bulky fields are omitted from listings; request them with 'fields' "
+            "or use the get tool for the full record."
+        )
+    text = to_json(result)
+    fetched = len(data)
+    while len(text) > JSON_BUDGET and len(data) > 1:
+        data.pop()
+        result["truncated"] = {
+            "returned": len(data),
+            "fetched": fetched,
+            "note": "Response too large; use a smaller per_page, 'fields', or the next page.",
+        }
+        text = to_json(result)
+    return text
 
 
 async def get_entity(
